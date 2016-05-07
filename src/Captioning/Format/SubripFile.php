@@ -7,25 +7,26 @@ use Captioning\File;
 class SubripFile extends File
 {
     const PATTERN =
-        '/^
-                       ### First subtitle ###
-        [\p{C}]{0,3}                            # BOM
-        [\d]+                                   # Subtitle order.
-        ((?:\r\n|\r|\n))                        # Line end.
-        [\d]{2}:[\d]{2}:[\d]{2},[\d]{3}         # Start time.
-        [ ]-->[ ]                               # Time delimiter.
-        [\d]{2}:[\d]{2}:[\d]{2},[\d]{3}         # End time.
-        (?:\1[\S ]+)+                           # Subtitle text.
-                       ### Other subtitles ###
-        (?:
-            \1\1(?<=\r\n|\r|\n)[\d]+\1
-            [\d]{2}:[\d]{2}:[\d]{2},[\d]{3}
-            [ ]-->[ ]
-            [\d]{2}:[\d]{2}:[\d]{2},[\d]{3}
-            (?:\1[\S ]+)+
-        )*
-        \1*
-        $/xu'
+    '/^
+                   ### First subtitle ###
+    [\p{C}]{0,3}                                    # BOM
+    [\d]+                                           # Subtitle order.
+    ((?:\r\n|\r|\n))                                # Line end.
+    [\d]{1,2}:[\d]{1,2}:[\d]{1,2}(?:,[\d]{1,3})?    # Start time. Milliseconds or leading zeroes not required.
+    [ ]-->[ ]                                       # Time delimiter.
+    [\d]{1,2}:[\d]{1,2}:[\d]{1,2}(?:,[\d]{1,3})?    # End time. Milliseconds or leading zeroes not required.
+    (?:\1[\S ]+)+                                   # Subtitle text.
+                   ### Other subtitles ###
+    (?:
+        \1\1(?<=\r\n|\r|\n)[\d]+\1
+        [\d]{1,2}:[\d]{1,2}:[\d]{1,2}(?:,[\d]{1,3})?
+        [ ]-->[ ]
+        [\d]{1,2}:[\d]{1,2}:[\d]{1,2}(?:,[\d]{1,3})?
+        (?:\1[\S ]+)+
+    )*
+    \1?
+    \s* # Allow trailing whitespace
+    $/xu'
     ;
 
     private $defaultOptions = array('_stripTags' => false, '_stripBasic' => false, '_replacements' => false);
@@ -40,6 +41,8 @@ class SubripFile extends File
 
     public function parse()
     {
+        $this->fixEmptyLines();
+
         $matches = array();
         $res = preg_match(self::PATTERN, $this->fileContent, $matches);
 
@@ -60,24 +63,27 @@ class SubripFile extends File
 
             $subtitleTimeStart = $timeline[0];
             $subtitleTimeEnd = $timeline[1];
+            $subtitleTimeStart = $this->cleanUpTimecode($subtitleTimeStart);
+            $subtitleTimeEnd = $this->cleanUpTimecode($subtitleTimeEnd);
 
             if (
-                $subtitle[0] != $subtitleOrder++ ||
                 !$this->validateTimelines($subtitleTime, $subtitleTimeStart, true) ||
                 !$this->validateTimelines($subtitleTimeStart, $subtitleTimeEnd)
             ) {
                 switch (true) {
-                    case $subtitle[0] != $subtitleOrder - 1: $errorMsg = 'Invalid subtitle order index: ' . $subtitle[0]; break;
                     case !$this->validateTimelines($subtitleTime, $subtitleTimeStart, true): $errorMsg = 'Staring time invalid: ' . $subtitleTimeStart; break;
                     case !$this->validateTimelines($subtitleTimeStart, $subtitleTimeEnd): $errorMsg = 'Ending time invalid: ' . $subtitleTimeEnd; break;
                 }
                 throw new \Exception($this->filename.' is not a proper .srt file. (' . $errorMsg . ')');
             }
 
-            $subtitleTime = $subtitleTimeEnd;
-            $cue = new SubripCue($timeline[0], $timeline[1], $subtitle[2]);
-            $cue->setLineEnding($this->lineEnding);
-            $this->addCue($cue);
+            // if caption line is not empty
+            if(isset($subtitle[2]) && trim($subtitle[2]) !== '') {
+                $subtitleTime = $subtitleTimeEnd;
+                $cue = new SubripCue($subtitleTimeStart, $subtitleTimeEnd, $subtitle[2]);
+                $cue->setLineEnding($this->lineEnding);
+                $this->addCue($cue);
+            }
         }
 
         return $this;
@@ -166,7 +172,7 @@ class SubripFile extends File
      * @param boolean $allowEqual
      * @return boolean
      */
-    private function validateTimelines($startTimeline, $endTimeline, $allowEqual = false)
+    private function validateTimelines(& $startTimeline, & $endTimeline, $allowEqual = false)
     {
         $startDateTime = \DateTime::createFromFormat('H:i:s,u', $startTimeline);
         $endDateTime = \DateTime::createFromFormat('H:i:s,u', $endTimeline);
@@ -179,9 +185,57 @@ class SubripFile extends File
             $startMilliseconds = ($startSeconds * 1000) + (int)substr($startTimeline, 9);
             $endMilliseconds = ($endSeconds * 1000) + (int)substr($endTimeline, 9);
 
-            return $startMilliseconds < $endMilliseconds || ($allowEqual && $startMilliseconds === $endMilliseconds);
+            if($startMilliseconds > $endMilliseconds) {
+                $startTimeline = $endTimeline;
+            }
+            return true;
         }
 
-        return $startTimeline < $endTimeline;
+        if($startTimeline > $endTimeline) {
+            $startTimeline = $endTimeline;
+        }
+        return true;
+    }
+
+        /**
+     * Add milliseconds and leading zeroes if they are missing
+     *
+     * @param $timecode
+     *
+     * @return mixed
+     */
+    private function cleanUpTimecode($timecode)
+    {
+        strpos($timecode, ',') ?: $timecode .= ',000';
+
+        $patternNoLeadingZeroes = '/(?:(?<=\:)|^)\d(?=(:|,))/';
+
+        return preg_replace_callback($patternNoLeadingZeroes, function($matches)
+        {
+            return sprintf('%02d', $matches[0]);
+        }, $timecode);
+    }
+
+    private function fixEmptyLines() {
+        $tempContent = "";
+        $lines = explode("\n",$this->fileContent);
+        $nextNotBlank = false;
+        foreach($lines as $line) {
+            $line = str_replace("\r","",$line);
+            if(strpos($line,'-->')!== false) {
+                // next line should not be blank
+                $nextNotBlank = true;
+                $tempContent .= $line."\n";
+                continue;
+            }
+            if($nextNotBlank==true && trim($line) === '') {
+                $line = " \n";
+            }
+
+            $nextNotBlank = false;
+            $tempContent .= $line."\n";
+        }
+
+        $this->fileContent = $tempContent;
     }
 }
