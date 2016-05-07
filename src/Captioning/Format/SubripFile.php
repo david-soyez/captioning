@@ -3,6 +3,10 @@
 namespace Captioning\Format;
 
 use Captioning\File;
+define('SRT_STATE_SUBNUMBER', 0);
+define('SRT_STATE_TIME',      1);
+define('SRT_STATE_TEXT',      2);
+define('SRT_STATE_BLANK',     3);
 
 class SubripFile extends File
 {
@@ -41,24 +45,19 @@ class SubripFile extends File
 
     public function parse()
     {
-        $this->fixEmptyLines();
+        $matches = $this->parseAlt();
 
-        $matches = array();
-        $res = preg_match(self::PATTERN, $this->fileContent, $matches);
-
-        if ($res === false || $res === 0) {
+        if (empty($matches)) {
             throw new \Exception($this->filename.' is not a proper .srt file.');
         }
 
-        $this->setLineEnding($matches[1]);
-        $bom = pack('CCC', 0xef, 0xbb, 0xbf);
-        $matches = explode($this->lineEnding.$this->lineEnding, trim($matches[0], $bom.$this->lineEnding));
+        $this->setLineEnding("\n");
 
         $subtitleOrder = 1;
         $subtitleTime = '';
 
         foreach ($matches as $match) {
-            $subtitle = explode($this->lineEnding, $match, 3);
+            $subtitle = $match;
             $timeline = explode(' --> ', $subtitle[1]);
 
             $subtitleTimeStart = $timeline[0];
@@ -237,5 +236,44 @@ class SubripFile extends File
         }
 
         $this->fileContent = $tempContent;
+    }
+
+    protected function parseAlt() {
+        $lines = explode("\n",$this->fileContent);
+        $subs    = array();
+        $state   = SRT_STATE_SUBNUMBER;
+        $subNum  = 0;
+        $subText = '';
+        $subTime = '';
+
+        foreach($lines as $line) {
+            switch($state) {
+                case SRT_STATE_SUBNUMBER:
+                    $subNum = trim($line);
+                    $state  = SRT_STATE_TIME;
+                    break;
+
+                case SRT_STATE_TIME:
+                    $subTime = trim($line);
+                    $state   = SRT_STATE_TEXT;
+                    break;
+
+                case SRT_STATE_TEXT:
+                    if (trim($line) == '') {
+                        $sub = array();
+                        $sub[0] = $subNum;
+                        $sub[1] = $subTime;
+                        $sub[2] = $subText;
+                        $subs[]      = $sub; 
+                        $subText     = '';
+                        $state       = SRT_STATE_SUBNUMBER;
+                    } else {
+                        $subText .= ' '.$line;
+                    }
+                    break;
+            }
+        }
+
+        return $subs;
     }
 }
