@@ -255,6 +255,10 @@ class SubripFile extends File
 
                 case SRT_STATE_TIME:
                     $subTime = trim($line);
+                    if(strpos($subTime,'-->')===false) {
+                        $state       = SRT_STATE_SUBNUMBER;
+                        continue;
+                    }
                     $state   = SRT_STATE_TEXT;
                     break;
 
