@@ -192,7 +192,9 @@ abstract class Cue implements CueInterface
      */
     public function getDuration()
     {
-        return $this->stopMS - $this->startMS;
+        $duration = $this->stopMS - $this->startMS;
+
+        return $duration ==0 ? 1:$duration;
     }
 
     /**
