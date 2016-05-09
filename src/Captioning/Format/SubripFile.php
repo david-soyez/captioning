@@ -48,7 +48,7 @@ class SubripFile extends File
         $matches = $this->parseAlt();
 
         if (empty($matches)) {
-            throw new \Exception($this->filename.' is not a proper .srt file.');
+            return null;
         }
 
         $this->setLineEnding("\n");
